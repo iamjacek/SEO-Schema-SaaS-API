@@ -1,9 +1,10 @@
 import { getSql, Env as DbEnv } from './lib/db';
 import { generateSeoSchemaOpenAI } from './lib/ai';
 import { requireAuth, formatAuthError, type AuthUser } from './lib/auth';
-import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { validateGenerateResult, formatValidationErrors } from './lib/validator';
 import { insertGeneration, insertGenerationError } from './lib/storage';
+import { successResponse, errorResponse, formatResponse, ERRORS, type GenerationResponseData } from './lib/response';
+import type { NeonQueryFunction } from '@neondatabase/serverless';
 
 export interface Env extends DbEnv {
 	DATABASE_URL: string;
@@ -22,11 +23,24 @@ export default {
 			return new Response('SEO Schema SaaS API is running', { status: 200 });
 		}
 
-		return new Response('Not found', { status: 404 });
+		return formatResponse(errorResponse('NOT_FOUND', 'Endpoint not found'), 404);
 	},
 };
 
 // ============ Types ============
+
+type GenerateRequestBody = {
+	contentType: 'Article' | 'Product' | 'LocalBusiness' | 'Service';
+	title: string;
+	brief?: string;
+	language?: string;
+	tone?: string;
+	targetKeyword?: string;
+	siteName?: string;
+	brandVoice?: string;
+	imageUrl?: string;
+	baseUrl?: string;
+};
 
 type User = {
 	id: string;
@@ -40,19 +54,6 @@ type Usage = {
 	periodStart: string;
 	periodEnd: string;
 	generationsUsed: number;
-};
-
-type GenerateRequestBody = {
-	contentType: 'Article' | 'Product' | 'LocalBusiness' | 'Service';
-	title: string;
-	brief?: string;
-	language?: string;
-	tone?: string;
-	targetKeyword?: string;
-	siteName?: string;
-	brandVoice?: string;
-	imageUrl?: string;
-	baseUrl?: string;
 };
 
 // ============ Main Handler ============
@@ -70,13 +71,13 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			console.log('✅ User authenticated:', user.email);
 		} catch (err: any) {
 			const authError = formatAuthError(err);
-			return json({ ok: false, error: authError }, 401);
+			return formatResponse(errorResponse(authError.code, authError.message), 401);
 		}
 
 		// 2) Parse and validate request body
 		const body = (await request.json()) as Partial<GenerateRequestBody>;
 		if (!body.contentType || !body.title) {
-			return json({ ok: false, error: { code: 'INVALID_REQUEST', message: 'contentType and title are required' } }, 400);
+			return formatResponse(ERRORS.INVALID_REQUEST(), 400);
 		}
 
 		// 3) Check usage limits
@@ -84,20 +85,10 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 		const usage = await getUserUsage(sql, user.id, user.monthlyLimit);
 
 		if (usage.generationsUsed >= user.monthlyLimit) {
-			return json(
-				{
-					ok: false,
-					error: {
-						code: 'QUOTA_EXCEEDED',
-						message: 'Monthly limit reached',
-						details: { limit: user.monthlyLimit, used: usage.generationsUsed },
-					},
-				},
-				429,
-			);
+			return formatResponse(ERRORS.QUOTA_EXCEEDED(usage.generationsUsed, user.monthlyLimit), 429);
 		}
 
-		// Prepare input data for reuse
+		// Prepare input data
 		const inputData = {
 			contentType: body.contentType,
 			title: body.title,
@@ -139,18 +130,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 				console.error('Failed to log error generation:', err);
 			}
 
-			// Return error WITHOUT incrementing usage
-			return json(
-				{
-					ok: false,
-					error: {
-						code: 'VALIDATION_FAILED',
-						message: 'OpenAI response failed validation',
-						details: validation.errors,
-					},
-				},
-				500,
-			);
+			return formatResponse(ERRORS.VALIDATION_FAILED(validation.errors), 500);
 		}
 
 		console.log('✅ Response validated successfully');
@@ -173,63 +153,40 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			console.log('✅ Generation saved - ID:', generationId);
 		} catch (err: any) {
 			console.error('❌ Failed to save generation:', err);
-
-			// If DB save fails, DON'T increment usage and return error
-			return json(
-				{
-					ok: false,
-					error: {
-						code: 'STORAGE_FAILED',
-						message: 'Failed to save generation record',
-					},
-				},
-				500,
-			);
+			return formatResponse(ERRORS.STORAGE_FAILED(), 500);
 		}
 
-		// 7) INCREMENT USAGE COUNTER (ONLY AFTER ALL SUCCESS CHECKS)
+		// 7) INCREMENT USAGE COUNTER
 		try {
 			await incrementUserUsage(sql, user.id, usage);
 			console.log(`✅ Usage incremented - User: ${user.id}, New count: ${usage.generationsUsed + 1}`);
 		} catch (err: any) {
 			console.error('❌ Failed to increment usage:', err);
 		}
-		// 8) Return success with all data
-		return json(
-			{
-				ok: true,
-				data: {
-					generationId,
-					userId: user.id,
-					usage: {
-						used: usage.generationsUsed + 1,
-						limit: user.monthlyLimit,
-					},
-					tokens,
-					result,
-				},
+
+		// 8) Return success
+		const responseData: GenerationResponseData = {
+			generationId: generationId!,
+			userId: user.id,
+			usage: {
+				used: usage.generationsUsed + 1,
+				limit: user.monthlyLimit,
 			},
-			200,
-		);
+			tokens,
+			result,
+		};
+
+		return formatResponse(successResponse(responseData), 200);
 	} catch (err: any) {
 		const msg = String(err?.message || '');
 
-		// Handle OpenAI quota errors gracefully
+		// Handle OpenAI quota errors
 		if (msg.includes('insufficient_quota') || msg.includes('You exceeded your current quota')) {
-			return json(
-				{
-					ok: false,
-					error: {
-						code: 'OPENAI_QUOTA',
-						message: 'OpenAI quota exceeded. Please top up your account.',
-					},
-				},
-				503,
-			);
+			return formatResponse(ERRORS.OPENAI_QUOTA(), 503);
 		}
 
 		console.error('Error in /generate:', err);
-		return json({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'Internal error' } }, 500);
+		return formatResponse(ERRORS.INTERNAL_ERROR(), 500);
 	}
 }
 
@@ -249,7 +206,6 @@ async function getUserUsage(sql: NeonQueryFunction<any, any>, userId: string, mo
     LIMIT 1
   `;
 
-	// Handle both array and FullQueryResults types
 	const rows = Array.isArray(result) ? result : (result as any).rows || [];
 
 	if (rows.length === 0) {
@@ -290,13 +246,4 @@ async function incrementUserUsage(sql: NeonQueryFunction<any, any>, userId: stri
       AND period_start = ${current.periodStart}
       AND period_end = ${current.periodEnd}
   `;
-}
-
-// ============ Utility Helpers ============
-
-function json(data: unknown, status = 200): Response {
-	return new Response(JSON.stringify(data), {
-		status,
-		headers: { 'Content-Type': 'application/json' },
-	});
 }
