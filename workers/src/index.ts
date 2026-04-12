@@ -97,9 +97,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			);
 		}
 
-		// 4) Generate SEO metadata via OpenAI (NOW RETURNS TOKENS)
-		console.log('Calling OpenAI Responses API with Structured Outputs...');
-
+		// Prepare input data for reuse
 		const inputData = {
 			contentType: body.contentType,
 			title: body.title,
@@ -113,6 +111,8 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			baseUrl: body.baseUrl || 'https://example.com',
 		};
 
+		// 4) Generate SEO metadata via OpenAI
+		console.log('Calling OpenAI Responses API with Structured Outputs...');
 		const { result, tokens } = await generateSeoSchemaOpenAI(inputData, env.OPENAI_API_KEY);
 
 		// 5) VALIDATE RESULT
@@ -131,7 +131,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 						planId: user.planId,
 						input: inputData,
 						error: errorMessage,
-						tokens, // NOW USE REAL TOKEN DATA
+						tokens,
 					},
 					env,
 				);
@@ -139,6 +139,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 				console.error('Failed to log error generation:', err);
 			}
 
+			// Return error WITHOUT incrementing usage
 			return json(
 				{
 					ok: false,
@@ -154,7 +155,8 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 
 		console.log('✅ Response validated successfully');
 
-		// 6) SAVE GENERATION RECORD (NOW WITH REAL TOKENS)
+		// 6) SAVE GENERATION RECORD
+		let generationId: string | null = null;
 		try {
 			const generation = await insertGeneration(
 				{
@@ -162,30 +164,48 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 					planId: user.planId,
 					input: inputData,
 					output: result,
-					tokens, // NOW USE REAL TOKEN DATA
+					tokens,
 				},
 				env,
 			);
 
-			console.log('✅ Generation saved - ID:', generation.id);
+			generationId = generation.id;
+			console.log('✅ Generation saved - ID:', generationId);
 		} catch (err: any) {
-			console.error('Failed to save generation:', err);
-			// Continue anyway - don't fail the request if storage fails
+			console.error('❌ Failed to save generation:', err);
+
+			// If DB save fails, DON'T increment usage and return error
+			return json(
+				{
+					ok: false,
+					error: {
+						code: 'STORAGE_FAILED',
+						message: 'Failed to save generation record',
+					},
+				},
+				500,
+			);
 		}
 
-		// 7) Increment usage counter
-		await incrementUserUsage(sql, user.id, usage);
-
+		// 7) INCREMENT USAGE COUNTER (ONLY AFTER ALL SUCCESS CHECKS)
+		try {
+			await incrementUserUsage(sql, user.id, usage);
+			console.log(`✅ Usage incremented - User: ${user.id}, New count: ${usage.generationsUsed + 1}`);
+		} catch (err: any) {
+			console.error('❌ Failed to increment usage:', err);
+		}
+		// 8) Return success with all data
 		return json(
 			{
 				ok: true,
 				data: {
+					generationId,
 					userId: user.id,
 					usage: {
 						used: usage.generationsUsed + 1,
 						limit: user.monthlyLimit,
 					},
-					tokens, // RETURN TOKENS IN RESPONSE
+					tokens,
 					result,
 				},
 			},
