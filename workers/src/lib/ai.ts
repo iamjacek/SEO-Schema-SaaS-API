@@ -64,7 +64,74 @@ function validateSeoResult(result: any): result is GenerateSeoSchemaResult {
 }
 
 /**
- * Generate SEO schema using OpenAI Responses API with injection protection
+ * Structured Output Schema for Responses API
+ * Defines exact structure OpenAI must return
+ */
+const STRUCTURED_OUTPUT_SCHEMA = {
+	type: 'object',
+	properties: {
+		metaTitle: {
+			type: 'string',
+			description: 'SEO meta title (max 60 chars)',
+		},
+		metaDescription: {
+			type: 'string',
+			description: 'SEO meta description (max 155 chars)',
+		},
+		slug: {
+			type: 'string',
+			description: 'URL-friendly slug (lowercase, hyphens only)',
+		},
+		url: {
+			type: 'string',
+			description: 'Full URL combining baseUrl and slug',
+		},
+		schemaJsonLd: {
+			type: 'object',
+			description: 'JSON-LD schema.org markup',
+			properties: {
+				'@context': {
+					type: 'string',
+				},
+				'@type': {
+					type: 'string',
+				},
+				url: {
+					type: 'string',
+				},
+			},
+			required: ['@context', '@type', 'url'],
+		},
+		ogTags: {
+			type: 'object',
+			description: 'Open Graph meta tags',
+			properties: {
+				'og:title': { type: 'string' },
+				'og:description': { type: 'string' },
+				'og:type': { type: 'string' },
+				'og:url': { type: 'string' },
+				'og:image': { type: 'string' },
+			},
+			required: ['og:title', 'og:description', 'og:type', 'og:url', 'og:image'],
+		},
+		twitterTags: {
+			type: 'object',
+			description: 'Twitter card meta tags',
+			properties: {
+				'twitter:card': { type: 'string' },
+				'twitter:title': { type: 'string' },
+				'twitter:description': { type: 'string' },
+				'twitter:image': { type: 'string' },
+			},
+			required: ['twitter:card', 'twitter:title', 'twitter:description', 'twitter:image'],
+		},
+	},
+	required: ['metaTitle', 'metaDescription', 'slug', 'url', 'schemaJsonLd', 'ogTags', 'twitterTags'],
+	additionalProperties: false,
+};
+
+/**
+ * Generate SEO schema using OpenAI Responses API with Structured Outputs
  */
 export async function generateSeoSchemaOpenAI(input: GenerateSeoSchemaInput, apiKey: string): Promise<GenerateSeoSchemaResult> {
 	const slug = slugify(input.title);
@@ -146,7 +213,7 @@ url: ${url}
 
 Generate SEO metadata following system instructions ONLY.`;
 
-	console.log('Calling OpenAI Responses API:', {
+	console.log('Calling OpenAI Responses API with Structured Outputs:', {
 		contentType: input.contentType,
 		title: sanitizedTitle,
 		brief: sanitizedBrief,
@@ -171,7 +238,15 @@ Generate SEO metadata following system instructions ONLY.`;
 				{ role: 'user', content: userPrompt },
 			],
 			max_tokens: 1200,
-			response_format: { type: 'json_object' },
+			output_schema: {
+				type: 'json_schema',
+				json_schema: {
+					name: 'seo_schema_result',
+					description: 'SEO metadata and JSON-LD output',
+					schema: STRUCTURED_OUTPUT_SCHEMA,
+					strict: true,
+				},
+			},
 		}),
 	});
 
@@ -182,8 +257,8 @@ Generate SEO metadata following system instructions ONLY.`;
 
 	const data: any = await response.json();
 
-	// Extract JSON from response
-	const raw = data.choices?.[0]?.message?.content ?? '';
+	// Extract JSON from Responses API response
+	const raw = data.output?.[0]?.content ?? '';
 
 	if (!raw) {
 		throw new Error('OpenAI returned empty response');
@@ -202,6 +277,8 @@ Generate SEO metadata following system instructions ONLY.`;
 		console.error('OpenAI result failed validation:', parsed);
 		throw new Error('OpenAI result does not match expected schema');
 	}
+
+	console.log('✅ OpenAI Structured Output validated successfully');
 
 	return parsed;
 }
