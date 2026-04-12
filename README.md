@@ -22,12 +22,14 @@ A scalable, high-performance API for generating SEO metadata and structured JSON
 
 ```text
 seo-schema-saas/
+├─ migrations
 ├─ workers/                  # Cloudflare Workers API
 │  ├─ src/
 │  │  ├─ index.ts            # Main API entry & routing
 │  │  ├─ lib/
 │  │  │  ├─ ai.ts            # OpenAI integration & prompts
 │  │  │  ├─ db.ts            # Neon Postgres client
+│  │  │  ├─ auth.ts          # Authorization
 │  ├─ wrangler.jsonc         # Cloudflare Workers config
 ├─ db/
 │  ├─ schema.sql             # Postgres database schema
