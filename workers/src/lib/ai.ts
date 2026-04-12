@@ -21,6 +21,16 @@ export type GenerateSeoSchemaResult = {
 	twitterTags: Record<string, string>;
 };
 
+export type TokenUsage = {
+	input: number;
+	output: number;
+};
+
+export type GenerateSeoSchemaOutput = {
+	result: GenerateSeoSchemaResult;
+	tokens: TokenUsage;
+};
+
 /**
  * Sanitise all user input: strip injection attempts and limit length
  */
@@ -133,7 +143,7 @@ const STRUCTURED_OUTPUT_SCHEMA = {
 /**
  * Generate SEO schema using OpenAI Responses API with Structured Outputs
  */
-export async function generateSeoSchemaOpenAI(input: GenerateSeoSchemaInput, apiKey: string): Promise<GenerateSeoSchemaResult> {
+export async function generateSeoSchemaOpenAI(input: GenerateSeoSchemaInput, apiKey: string): Promise<GenerateSeoSchemaOutput> {
 	const slug = slugify(input.title);
 	const baseUrl = input.baseUrl.replace(/\/+$/, '');
 	const url = `${baseUrl}/${slug}`;
@@ -280,7 +290,19 @@ Generate SEO metadata following system instructions ONLY.`;
 
 	console.log('✅ OpenAI Structured Output validated successfully');
 
-	return parsed;
+	// Extract token usage from OpenAI response
+	const inputTokens = data.usage?.input_tokens ?? data.usage?.prompt_tokens ?? 0;
+	const outputTokens = data.usage?.output_tokens ?? data.usage?.completion_tokens ?? 0;
+
+	console.log(`📊 Token usage - Input: ${inputTokens}, Output: ${outputTokens}`);
+
+	return {
+		result: parsed,
+		tokens: {
+			input: inputTokens,
+			output: outputTokens,
+		},
+	};
 }
 
 /**

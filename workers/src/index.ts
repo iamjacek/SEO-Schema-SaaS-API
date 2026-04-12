@@ -3,6 +3,7 @@ import { generateSeoSchemaOpenAI } from './lib/ai';
 import { requireAuth, formatAuthError, type AuthUser } from './lib/auth';
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { validateGenerateResult, formatValidationErrors } from './lib/validator';
+import { insertGeneration, insertGenerationError } from './lib/storage';
 
 export interface Env extends DbEnv {
 	DATABASE_URL: string;
@@ -60,7 +61,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 	console.log('=== REQUEST RECEIVED ===');
 
 	try {
-		// 1) AUTHENTICATE USER - Extract and validate bearer token
+		// 1) AUTHENTICATE USER
 		const authHeader = request.headers.get('Authorization');
 		let user: AuthUser;
 
@@ -96,8 +97,10 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			);
 		}
 
-		// 4) Generate SEO metadata via OpenAI
-		console.log('Input to AI:', {
+		// 4) Generate SEO metadata via OpenAI (NOW RETURNS TOKENS)
+		console.log('Calling OpenAI Responses API with Structured Outputs...');
+
+		const inputData = {
 			contentType: body.contentType,
 			title: body.title,
 			brief: body.brief || '',
@@ -106,33 +109,36 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			targetKeyword: body.targetKeyword || '',
 			siteName: body.siteName || '',
 			brandVoice: body.brandVoice || '',
-			imageUrl: body.imageUrl,
-			baseUrl: body.baseUrl,
-		});
+			imageUrl: body.imageUrl || null,
+			baseUrl: body.baseUrl || 'https://example.com',
+		};
 
-		const result = await generateSeoSchemaOpenAI(
-			{
-				contentType: body.contentType,
-				title: body.title,
-				brief: body.brief || '',
-				language: body.language || 'en',
-				tone: body.tone || 'neutral',
-				targetKeyword: body.targetKeyword || '',
-				siteName: body.siteName || '',
-				brandVoice: body.brandVoice || '',
-				imageUrl: body.imageUrl || null,
-				baseUrl: body.baseUrl || 'https://example.com',
-			},
-			env.OPENAI_API_KEY,
-		);
+		const { result, tokens } = await generateSeoSchemaOpenAI(inputData, env.OPENAI_API_KEY);
 
-		// 5) VALIDATE RESULT (NEW STEP)
+		// 5) VALIDATE RESULT
 		console.log('Validating OpenAI response...');
 		const validation = validateGenerateResult(result);
 
 		if (!validation.valid) {
 			const errorMessage = formatValidationErrors(validation.errors);
 			console.error('❌ Validation failed:', errorMessage);
+
+			// Save error to DB for debugging
+			try {
+				await insertGenerationError(
+					{
+						userId: user.id,
+						planId: user.planId,
+						input: inputData,
+						error: errorMessage,
+						tokens, // NOW USE REAL TOKEN DATA
+					},
+					env,
+				);
+			} catch (err) {
+				console.error('Failed to log error generation:', err);
+			}
+
 			return json(
 				{
 					ok: false,
@@ -148,7 +154,26 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 
 		console.log('✅ Response validated successfully');
 
-		// 6) Increment usage counter
+		// 6) SAVE GENERATION RECORD (NOW WITH REAL TOKENS)
+		try {
+			const generation = await insertGeneration(
+				{
+					userId: user.id,
+					planId: user.planId,
+					input: inputData,
+					output: result,
+					tokens, // NOW USE REAL TOKEN DATA
+				},
+				env,
+			);
+
+			console.log('✅ Generation saved - ID:', generation.id);
+		} catch (err: any) {
+			console.error('Failed to save generation:', err);
+			// Continue anyway - don't fail the request if storage fails
+		}
+
+		// 7) Increment usage counter
 		await incrementUserUsage(sql, user.id, usage);
 
 		return json(
@@ -160,6 +185,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 						used: usage.generationsUsed + 1,
 						limit: user.monthlyLimit,
 					},
+					tokens, // RETURN TOKENS IN RESPONSE
 					result,
 				},
 			},
