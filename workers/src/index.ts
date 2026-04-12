@@ -2,6 +2,7 @@ import { getSql, Env as DbEnv } from './lib/db';
 import { generateSeoSchemaOpenAI } from './lib/ai';
 import { requireAuth, formatAuthError, type AuthUser } from './lib/auth';
 import type { NeonQueryFunction } from '@neondatabase/serverless';
+import { validateGenerateResult, formatValidationErrors } from './lib/validator';
 
 export interface Env extends DbEnv {
 	DATABASE_URL: string;
@@ -125,7 +126,29 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			env.OPENAI_API_KEY,
 		);
 
-		// 5) Increment usage counter
+		// 5) VALIDATE RESULT (NEW STEP)
+		console.log('Validating OpenAI response...');
+		const validation = validateGenerateResult(result);
+
+		if (!validation.valid) {
+			const errorMessage = formatValidationErrors(validation.errors);
+			console.error('❌ Validation failed:', errorMessage);
+			return json(
+				{
+					ok: false,
+					error: {
+						code: 'VALIDATION_FAILED',
+						message: 'OpenAI response failed validation',
+						details: validation.errors,
+					},
+				},
+				500,
+			);
+		}
+
+		console.log('✅ Response validated successfully');
+
+		// 6) Increment usage counter
 		await incrementUserUsage(sql, user.id, usage);
 
 		return json(
