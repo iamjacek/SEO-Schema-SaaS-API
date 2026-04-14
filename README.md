@@ -30,6 +30,9 @@ seo-schema-saas/
 │  │  │  ├─ ai.ts            # OpenAI integration & prompts
 │  │  │  ├─ db.ts            # Neon Postgres client
 │  │  │  ├─ auth.ts          # Authorization
+│  │  │  ├─ responses.ts     # Errors
+│  │  │  ├─ storage.ts       # Save success and error responses to DB
+│  │  │  ├─ validator.ts     # Validate openAI response
 │  ├─ wrangler.jsonc         # Cloudflare Workers config
 ├─ db/
 │  ├─ schema.sql             # Postgres database schema
