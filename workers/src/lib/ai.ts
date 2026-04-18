@@ -16,7 +16,7 @@ export type GenerateSeoSchemaResult = {
 	metaDescription: string;
 	slug: string;
 	url: string;
-	schemaJsonLd: any;
+	schemaJsonLd: Record<string, any>;
 	ogTags: Record<string, string>;
 	twitterTags: Record<string, string>;
 };
@@ -111,6 +111,7 @@ const STRUCTURED_OUTPUT_SCHEMA = {
 				},
 			},
 			required: ['@context', '@type', 'url'],
+			additionalProperties: true,
 		},
 		ogTags: {
 			type: 'object',
@@ -123,6 +124,7 @@ const STRUCTURED_OUTPUT_SCHEMA = {
 				'og:image': { type: 'string' },
 			},
 			required: ['og:title', 'og:description', 'og:type', 'og:url', 'og:image'],
+			additionalProperties: false,
 		},
 		twitterTags: {
 			type: 'object',
@@ -134,11 +136,39 @@ const STRUCTURED_OUTPUT_SCHEMA = {
 				'twitter:image': { type: 'string' },
 			},
 			required: ['twitter:card', 'twitter:title', 'twitter:description', 'twitter:image'],
+			additionalProperties: false,
 		},
 	},
 	required: ['metaTitle', 'metaDescription', 'slug', 'url', 'schemaJsonLd', 'ogTags', 'twitterTags'],
 	additionalProperties: false,
 };
+
+/**
+ * Extract text payload from Responses-style API output
+ */
+function extractResponseText(data: any): string {
+	if (typeof data?.output_text === 'string' && data.output_text.trim()) {
+		return data.output_text.trim();
+	}
+
+	const output = Array.isArray(data?.output) ? data.output : [];
+
+	for (const item of output) {
+		const content = Array.isArray(item?.content) ? item.content : [];
+
+		for (const part of content) {
+			if (typeof part?.text === 'string' && part.text.trim()) {
+				return part.text.trim();
+			}
+
+			if (typeof part?.output_text === 'string' && part.output_text.trim()) {
+				return part.output_text.trim();
+			}
+		}
+	}
+
+	return '';
+}
 
 /**
  * Generate SEO schema using OpenAI Responses API with Structured Outputs
@@ -217,7 +247,7 @@ brandVoice: ${sanitizedBrandVoice}
 siteName: ${sanitizedSiteName}
 targetKeyword: ${sanitizedTargetKeyword}
 imageUrl: ${input.imageUrl || '(not provided)'}
-baseUrl: ${input.baseUrl}
+baseUrl: ${baseUrl}
 slug: ${slug}
 url: ${url}
 
@@ -232,10 +262,11 @@ Generate SEO metadata following system instructions ONLY.`;
 		brandVoice: sanitizedBrandVoice,
 		siteName: sanitizedSiteName,
 		targetKeyword: sanitizedTargetKeyword,
-		baseUrl: input.baseUrl,
+		baseUrl,
+		max_output_tokens: 1000,
 	});
 
-	const response = await fetch('https://api.openai.com/v1/chat/responses', {
+	const response = await fetch('https://api.openai.com/v1/responses', {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${apiKey}`,
@@ -243,16 +274,13 @@ Generate SEO metadata following system instructions ONLY.`;
 		},
 		body: JSON.stringify({
 			model: 'gpt-4o-mini',
-			messages: [
-				{ role: 'system', content: systemPrompt },
-				{ role: 'user', content: userPrompt },
-			],
-			max_tokens: 1200,
-			output_schema: {
-				type: 'json_schema',
-				json_schema: {
+			instructions: systemPrompt,
+			input: userPrompt,
+			max_output_tokens: 1000,
+			text: {
+				format: {
+					type: 'json_schema',
 					name: 'seo_schema_result',
-					description: 'SEO metadata and JSON-LD output',
 					schema: STRUCTURED_OUTPUT_SCHEMA,
 					strict: true,
 				},
@@ -267,11 +295,20 @@ Generate SEO metadata following system instructions ONLY.`;
 
 	const data: any = await response.json();
 
-	// Extract JSON from Responses API response
-	const raw = data.output?.[0]?.content ?? '';
+	if (data.status === 'incomplete') {
+		const reason = data.incomplete_details?.reason || 'unknown';
+
+		if (reason === 'max_output_tokens') {
+			throw new Error('OpenAI output was truncated: max_output_tokens limit reached. Try increasing max_output_tokens to 1200.');
+		}
+
+		throw new Error(`OpenAI returned incomplete output: ${reason}`);
+	}
+
+	const raw = extractResponseText(data);
 
 	if (!raw) {
-		throw new Error('OpenAI returned empty response');
+		throw new Error('OpenAI returned empty response payload');
 	}
 
 	let parsed: any;
@@ -282,7 +319,16 @@ Generate SEO metadata following system instructions ONLY.`;
 		throw new Error(`OpenAI returned invalid JSON: ${e}`);
 	}
 
-	// Validate result
+	// Enforce canonical url/slug if desired
+	parsed.slug = slug;
+	parsed.url = url;
+	if (parsed?.schemaJsonLd && typeof parsed.schemaJsonLd === 'object') {
+		parsed.schemaJsonLd.url = url;
+	}
+	if (parsed?.ogTags && typeof parsed.ogTags === 'object') {
+		parsed.ogTags['og:url'] = url;
+	}
+
 	if (!validateSeoResult(parsed)) {
 		console.error('OpenAI result failed validation:', parsed);
 		throw new Error('OpenAI result does not match expected schema');
@@ -290,7 +336,6 @@ Generate SEO metadata following system instructions ONLY.`;
 
 	console.log('✅ OpenAI Structured Output validated successfully');
 
-	// Extract token usage from OpenAI response
 	const inputTokens = data.usage?.input_tokens ?? data.usage?.prompt_tokens ?? 0;
 	const outputTokens = data.usage?.output_tokens ?? data.usage?.completion_tokens ?? 0;
 
