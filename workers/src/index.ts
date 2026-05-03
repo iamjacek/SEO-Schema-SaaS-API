@@ -60,9 +60,12 @@ type Usage = {
 
 async function handleGenerate(request: Request, env: Env): Promise<Response> {
 	console.log('=== REQUEST RECEIVED ===');
+	console.log('Method:', request.method);
+	console.log('URL:', request.url);
 
 	try {
 		// 1) AUTHENTICATE USER
+		console.log('Step 1: Authenticating user...');
 		const authHeader = request.headers.get('Authorization');
 		let user: AuthUser;
 
@@ -70,25 +73,35 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			user = await requireAuth(authHeader, env);
 			console.log('✅ User authenticated:', user.email);
 		} catch (err: any) {
+			console.log('❌ Auth failed:', err.message);
 			const authError = formatAuthError(err);
 			return formatResponse(errorResponse(authError.code, authError.message), 401);
 		}
 
 		// 2) Parse and validate request body
+		console.log('Step 2: Parsing request body...');
 		const body = (await request.json()) as Partial<GenerateRequestBody>;
+		console.log('Body parsed:', { contentType: body.contentType, title: body.title?.substring(0, 50) });
+
 		if (!body.contentType || !body.title) {
 			return formatResponse(ERRORS.INVALID_REQUEST(), 400);
 		}
 
 		// 3) Check usage limits
+		console.log('Step 3: Checking usage limits...');
 		const sql = getSql(env);
+		console.log('Database connection initialized');
+
 		const usage = await getUserUsage(sql, user.id, user.monthlyLimit);
+		console.log('Usage retrieved:', usage.generationsUsed, '/', user.monthlyLimit);
 
 		if (usage.generationsUsed >= user.monthlyLimit) {
+			console.log('❌ Quota exceeded');
 			return formatResponse(ERRORS.QUOTA_EXCEEDED(usage.generationsUsed, user.monthlyLimit), 429);
 		}
 
 		// Prepare input data
+		console.log('Step 4: Preparing input data...');
 		const inputData = {
 			contentType: body.contentType,
 			title: body.title,
@@ -101,14 +114,29 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			imageUrl: body.imageUrl || null,
 			baseUrl: body.baseUrl || 'https://example.com',
 		};
+		console.log('Input data prepared');
 
 		// 4) Generate SEO metadata via OpenAI
-		console.log('Calling OpenAI Responses API with Structured Outputs...');
-		const { result, tokens } = await generateSeoSchemaOpenAI(inputData, env.OPENAI_API_KEY);
+		console.log('Step 5: Calling OpenAI...');
+		console.log('OpenAI API key present:', !!env.OPENAI_API_KEY);
+
+		let result, tokens;
+		try {
+			const aiResponse = await generateSeoSchemaOpenAI(inputData, env.OPENAI_API_KEY);
+			result = aiResponse.result;
+			tokens = aiResponse.tokens;
+			console.log('✅ OpenAI response received');
+			console.log('Tokens:', tokens);
+		} catch (aiErr: any) {
+			console.error('❌ OpenAI error:', aiErr.message);
+			console.error('Full OpenAI error:', aiErr);
+			throw aiErr;
+		}
 
 		// 5) VALIDATE RESULT
-		console.log('Validating OpenAI response...');
+		console.log('Step 6: Validating result...');
 		const validation = validateGenerateResult(result);
+		console.log('Validation passed:', validation.valid);
 
 		if (!validation.valid) {
 			const errorMessage = formatValidationErrors(validation.errors);
@@ -136,6 +164,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 		console.log('✅ Response validated successfully');
 
 		// 6) SAVE GENERATION RECORD
+		console.log('Step 7: Saving generation record...');
 		let generationId: string | null = null;
 		try {
 			const generation = await insertGeneration(
@@ -152,7 +181,8 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 			generationId = generation.id;
 			console.log('✅ Generation saved - ID:', generationId);
 		} catch (err: any) {
-			console.error('❌ Failed to save generation:', err);
+			console.error('❌ Failed to save generation:', err.message);
+			console.error('Full error:', err);
 			return formatResponse(ERRORS.STORAGE_FAILED(), 500);
 		}
 
@@ -165,6 +195,7 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 		}
 
 		// 8) Return success
+		console.log('Step 9: Returning success response...');
 		const responseData: GenerationResponseData = {
 			generationId: generationId!,
 			userId: user.id,
@@ -179,6 +210,12 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
 		return formatResponse(successResponse(responseData), 200);
 	} catch (err: any) {
 		const msg = String(err?.message || '');
+
+		console.error('=== UNHANDLED ERROR ===');
+		console.error('Error message:', err?.message);
+		console.error('Error stack:', err?.stack);
+		console.error('Full error:', err);
+		console.error('======================');
 
 		// Handle OpenAI quota errors
 		if (msg.includes('insufficient_quota') || msg.includes('You exceeded your current quota')) {

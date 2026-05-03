@@ -6,6 +6,9 @@ worker.env
 wrangler.env
 .wrangler/
 
+# Tokens & secrets
+*.token
+
 # ===== NODE =====
 node_modules/
 package-lock.json

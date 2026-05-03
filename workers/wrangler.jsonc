@@ -11,6 +11,9 @@
 		"enabled": true,
 	},
 	"compatibility_flags": ["nodejs_compat"],
+	"secrets": {
+		"required": ["OPENAI_API_KEY", "DATABASE_URL"],
+	},
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

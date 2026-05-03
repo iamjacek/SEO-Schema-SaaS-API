@@ -3,6 +3,7 @@ import { neon } from '@neondatabase/serverless';
 
 export interface Env {
 	DATABASE_URL: string;
+	OPENAI_API_KEY: string;
 }
 
 export function getSql(env: Env) {

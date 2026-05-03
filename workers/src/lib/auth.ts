@@ -24,58 +24,69 @@ function extractBearerToken(authHeader: string | null): string | null {
  */
 export async function requireAuth(authHeader: string | null, env: DbEnv): Promise<AuthUser> {
 	const token = extractBearerToken(authHeader);
+	console.log('Auth header received:', authHeader ? 'yes' : 'no');
+	console.log('Extracted token:', token);
 
 	if (!token) {
 		throw new Error('MISSING_AUTH_HEADER');
 	}
 
-	const sql = getSql(env);
+	try {
+		const sql = getSql(env);
+		console.log('DATABASE_URL exists:', !!env.DATABASE_URL);
 
-	// Look up token in DB
-	const result = await sql`
-    SELECT 
-      u.id,
-      u.email,
-      u.plan_id,
-      p.monthly_generations,
-      at.expires_at,
-      at.is_active
-    FROM auth_tokens at
-    JOIN users u ON u.id = at.user_id
-    JOIN plans p ON p.id = u.plan_id
-    WHERE at.token = ${token}
-    LIMIT 1
-  `;
+		const result = await sql`
+        SELECT 
+          u.id,
+          u.email,
+          u.plan_id,
+          p.monthly_generations,
+          at.expires_at,
+          at.is_active
+        FROM auth_tokens at
+        JOIN users u ON u.id = at.user_id
+        JOIN plans p ON p.id = u.plan_id
+        WHERE at.token = ${token}
+        LIMIT 1
+      `;
 
-	const rows = Array.isArray(result) ? result : (result as any).rows || [];
+		const rows = Array.isArray(result) ? result : (result as any).rows || [];
+		console.log('Auth rows found:', rows.length);
 
-	if (rows.length === 0) {
-		throw new Error('INVALID_AUTH_TOKEN');
+		if (rows.length === 0) {
+			throw new Error('INVALID_AUTH_TOKEN');
+		}
+
+		const row = rows[0] as any;
+		console.log('Auth row:', {
+			userId: row.id,
+			email: row.email,
+			isActive: row.is_active,
+			expiresAt: row.expires_at,
+		});
+
+		if (!row.is_active) {
+			throw new Error('TOKEN_REVOKED');
+		}
+
+		if (row.expires_at && new Date(row.expires_at) < new Date()) {
+			throw new Error('TOKEN_EXPIRED');
+		}
+
+		trackTokenUsage(sql, token).catch((err) => {
+			console.warn('Failed to track token usage:', err);
+		});
+
+		return {
+			id: row.id,
+			email: row.email,
+			planId: row.plan_id,
+			monthlyLimit: row.monthly_generations,
+		};
+	} catch (err) {
+		console.error('requireAuth failed:', err);
+		throw err;
 	}
-
-	const row = rows[0] as any;
-
-	// Check if token is active
-	if (!row.is_active) {
-		throw new Error('TOKEN_REVOKED');
-	}
-
-	// Check if token is expired
-	if (row.expires_at && new Date(row.expires_at) < new Date()) {
-		throw new Error('TOKEN_EXPIRED');
-	}
-
-	// Update last_used_at timestamp (fire and forget, don't block auth)
-	trackTokenUsage(sql, token).catch((err) => {
-		console.warn('Failed to track token usage:', err);
-	});
-
-	return {
-		id: row.id,
-		email: row.email,
-		planId: row.plan_id,
-		monthlyLimit: row.monthly_generations,
-	};
 }
 
 /**

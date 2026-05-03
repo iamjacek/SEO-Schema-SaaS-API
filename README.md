@@ -90,6 +90,37 @@ Generates SEO metadata and schema.
 **Response:**
 Returns `metaTitle`, `metaDescription`, `slug`, `url`, `schemaJsonLd`, `ogTags`, and `twitterTags`.
 
+## Testing the API
+
+### Prerequisites
+
+- PowerShell 5.0+
+- API running locally: `wrangler dev`
+
+### Running Tests
+
+1. Get your API token from environment variables or use `demo-token-12345abcde`
+
+2. Run the test suite:
+
+```powershell
+.\test-api.ps1 -Token "your-token-here"
+```
+
+3. View results - shows:
+   - Response time per request
+   - Tokens used (input/output)
+   - Meta titles generated
+   - Pass/fail status
+
+### Custom Endpoint
+
+If API runs on different port:
+
+```powershell
+.\test-api.ps1 -Token "your-token-here" -BaseUri "http://localhost:9000/generate"
+```
+
 ## 📜 License & Usage
 
 This repository is shared for **portfolio and educational purposes only** and is **not licensed for general use** in live products or commercial projects.
