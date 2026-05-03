@@ -6,10 +6,141 @@ import { insertGeneration, insertGenerationError } from './lib/storage';
 import { successResponse, errorResponse, formatResponse, ERRORS, type GenerationResponseData } from './lib/response';
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { getDashboardHTML } from './lib/dashboard';
+import { requireAdminKey, createToken, listTokens, revokeToken, rotateToken, getTokenStats } from './lib/admin';
 
 export interface Env extends DbEnv {
 	DATABASE_URL: string;
 	OPENAI_API_KEY: string;
+	ADMIN_KEY: string;
+}
+
+// ==================== ADMIN HANDLERS ====================
+
+async function handleAdminCreateToken(request: Request, env: Env): Promise<Response> {
+	try {
+		// Check admin key
+		const authHeader = request.headers.get('Authorization');
+		if (!requireAdminKey(authHeader, env.ADMIN_KEY)) {
+			return formatResponse(errorResponse('UNAUTHORIZED', 'Invalid or missing admin key'), 401);
+		}
+
+		// Parse request
+		const body = (await request.json()) as { userId: string; name: string };
+		if (!body.userId || !body.name) {
+			return formatResponse(errorResponse('INVALID_REQUEST', 'userId and name are required'), 400);
+		}
+
+		// Create token
+		const { id, token } = await createToken(body.userId, body.name, env);
+
+		console.log(`✅ Admin: Token created - ID: ${id}`);
+
+		return formatResponse(
+			successResponse({
+				id,
+				token, // Only shown once!
+				message: 'Token created. Save this token securely - it will not be shown again.',
+			}),
+			200,
+		);
+	} catch (err: any) {
+		console.error('Admin error:', err);
+		return formatResponse(ERRORS.INTERNAL_ERROR(), 500);
+	}
+}
+
+async function handleAdminListTokens(request: Request, env: Env): Promise<Response> {
+	try {
+		// Check admin key
+		const authHeader = request.headers.get('Authorization');
+		if (!requireAdminKey(authHeader, env.ADMIN_KEY)) {
+			return formatResponse(errorResponse('UNAUTHORIZED', 'Invalid or missing admin key'), 401);
+		}
+
+		// Get userId from query params
+		const userId = new URL(request.url).searchParams.get('userId');
+		if (!userId) {
+			return formatResponse(errorResponse('INVALID_REQUEST', 'userId query parameter required'), 400);
+		}
+
+		// List tokens
+		const tokens = await listTokens(userId, env);
+
+		// Redact token values (show only first 10 chars)
+		const redacted = tokens.map((t) => ({
+			...t,
+			token: t.token.substring(0, 10) + '...',
+		}));
+
+		return formatResponse(successResponse({ userId, tokens: redacted }), 200);
+	} catch (err: any) {
+		console.error('Admin error:', err);
+		return formatResponse(ERRORS.INTERNAL_ERROR(), 500);
+	}
+}
+
+async function handleAdminRevokeToken(tokenId: string, request: Request, env: Env): Promise<Response> {
+	try {
+		// Check admin key
+		const authHeader = request.headers.get('Authorization');
+		if (!requireAdminKey(authHeader, env.ADMIN_KEY)) {
+			return formatResponse(errorResponse('UNAUTHORIZED', 'Invalid or missing admin key'), 401);
+		}
+
+		// Get userId from query params
+		const userId = new URL(request.url).searchParams.get('userId');
+		if (!userId) {
+			return formatResponse(errorResponse('INVALID_REQUEST', 'userId query parameter required'), 400);
+		}
+
+		// Revoke token
+		const success = await revokeToken(tokenId, userId, env);
+
+		if (!success) {
+			return formatResponse(errorResponse('NOT_FOUND', 'Token not found or already revoked'), 404);
+		}
+
+		console.log(`✅ Admin: Token revoked - ID: ${tokenId}`);
+
+		return formatResponse(successResponse({ message: 'Token revoked' }), 200);
+	} catch (err: any) {
+		console.error('Admin error:', err);
+		return formatResponse(ERRORS.INTERNAL_ERROR(), 500);
+	}
+}
+
+async function handleAdminRotateToken(tokenId: string, request: Request, env: Env): Promise<Response> {
+	try {
+		// Check admin key
+		const authHeader = request.headers.get('Authorization');
+		if (!requireAdminKey(authHeader, env.ADMIN_KEY)) {
+			return formatResponse(errorResponse('UNAUTHORIZED', 'Invalid or missing admin key'), 401);
+		}
+
+		// Get userId from query params
+		const userId = new URL(request.url).searchParams.get('userId');
+		if (!userId) {
+			return formatResponse(errorResponse('INVALID_REQUEST', 'userId query parameter required'), 400);
+		}
+
+		// Rotate token
+		const { id, token } = await rotateToken(tokenId, userId, env);
+
+		console.log(`✅ Admin: Token rotated - Old ID: ${tokenId}, New ID: ${id}`);
+
+		return formatResponse(
+			successResponse({
+				oldTokenId: tokenId,
+				newTokenId: id,
+				newToken: token,
+				message: 'Token rotated. Old token revoked, new token created.',
+			}),
+			200,
+		);
+	} catch (err: any) {
+		console.error('Admin error:', err);
+		return formatResponse(ERRORS.INTERNAL_ERROR(), 500);
+	}
 }
 
 export default {
@@ -35,6 +166,30 @@ export default {
 		// API: Get generations for authenticated user
 		if (url.pathname === '/api/generations' && request.method === 'GET') {
 			return handleGetGenerations(request, env);
+		}
+
+		// ==================== ADMIN ENDPOINTS ====================
+
+		// Admin: Create new token
+		if (url.pathname === '/admin/tokens' && request.method === 'POST') {
+			return handleAdminCreateToken(request, env);
+		}
+
+		// Admin: List tokens
+		if (url.pathname === '/admin/tokens' && request.method === 'GET') {
+			return handleAdminListTokens(request, env);
+		}
+
+		// Admin: Revoke token
+		if (url.pathname.match(/^\/admin\/tokens\/[^/]+$/) && request.method === 'DELETE') {
+			const tokenId = url.pathname.split('/').pop();
+			return handleAdminRevokeToken(tokenId!, request, env);
+		}
+
+		// Admin: Rotate token
+		if (url.pathname.match(/^\/admin\/tokens\/[^/]+\/rotate$/) && request.method === 'POST') {
+			const tokenId = url.pathname.split('/')[3];
+			return handleAdminRotateToken(tokenId!, request, env);
 		}
 
 		return formatResponse(errorResponse('NOT_FOUND', 'Endpoint not found'), 404);
