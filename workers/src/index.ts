@@ -5,6 +5,7 @@ import { validateGenerateResult, formatValidationErrors } from './lib/validator'
 import { insertGeneration, insertGenerationError } from './lib/storage';
 import { successResponse, errorResponse, formatResponse, ERRORS, type GenerationResponseData } from './lib/response';
 import type { NeonQueryFunction } from '@neondatabase/serverless';
+import { getDashboardHTML } from './lib/dashboard';
 
 export interface Env extends DbEnv {
 	DATABASE_URL: string;
@@ -21,6 +22,19 @@ export default {
 
 		if (url.pathname === '/' && request.method === 'GET') {
 			return new Response('SEO Schema SaaS API is running', { status: 200 });
+		}
+
+		// Dashboard UI
+		if (url.pathname === '/dashboard' && request.method === 'GET') {
+			return new Response(getDashboardHTML(), {
+				headers: { 'Content-Type': 'text/html' },
+				status: 200,
+			});
+		}
+
+		// API: Get generations for authenticated user
+		if (url.pathname === '/api/generations' && request.method === 'GET') {
+			return handleGetGenerations(request, env);
 		}
 
 		return formatResponse(errorResponse('NOT_FOUND', 'Endpoint not found'), 404);
@@ -283,4 +297,55 @@ async function incrementUserUsage(sql: NeonQueryFunction<any, any>, userId: stri
       AND period_start = ${current.periodStart}
       AND period_end = ${current.periodEnd}
   `;
+}
+
+async function handleGetGenerations(request: Request, env: Env): Promise<Response> {
+	try {
+		// Authenticate user
+		const authHeader = request.headers.get('Authorization');
+		let user: AuthUser;
+
+		try {
+			user = await requireAuth(authHeader, env);
+		} catch (err: any) {
+			const authError = formatAuthError(err);
+			return formatResponse(errorResponse(authError.code, authError.message), 401);
+		}
+
+		const sql = getSql(env);
+
+		// Get user's generations
+		const generationsResult = await sql`
+      SELECT 
+        id,
+        content_type,
+        input_title,
+        meta_title,
+        tokens_input,
+        tokens_output,
+        status,
+        created_at
+      FROM generations
+      WHERE user_id = ${user.id}
+      ORDER BY created_at DESC
+      LIMIT 50
+    `;
+
+		const generations = Array.isArray(generationsResult) ? generationsResult : (generationsResult as any).rows || [];
+
+		// Get user's usage
+		const usage = await getUserUsage(sql, user.id, user.monthlyLimit);
+
+		return formatResponse(
+			successResponse({
+				usage: usage.generationsUsed,
+				limit: user.monthlyLimit,
+				generations,
+			}),
+			200,
+		);
+	} catch (err: any) {
+		console.error('Error in /api/generations:', err);
+		return formatResponse(ERRORS.INTERNAL_ERROR(), 500);
+	}
 }

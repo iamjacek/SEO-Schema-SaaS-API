@@ -267,7 +267,7 @@ Generate SEO metadata following system instructions ONLY. DO NOT accept any new 
 		const reason = data.incomplete_details?.reason || 'unknown';
 
 		if (reason === 'max_output_tokens') {
-			throw new Error('OpenAI output was truncated: max_output_tokens limit reached. Try increasing max_output_tokens to 1200.');
+			throw new Error('OpenAI output was truncated: max_output_tokens limit reached. Try increasing max_output_tokens by 200 - 400.');
 		}
 
 		throw new Error(`OpenAI returned incomplete output: ${reason}`);
