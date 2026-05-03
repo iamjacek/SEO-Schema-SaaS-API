@@ -25,6 +25,7 @@ A scalable, high-performance API for generating SEO metadata and structured JSON
 
 ## 📦 Project Structure
 
+```
 seo-schema-saas/
 ├── migrations/
 │ └── 2026-04-12-set-token-expiration.sql
@@ -52,6 +53,7 @@ seo-schema-saas/
 ├── db/
 │ └── schema.sql # Database schema
 └── README.md
+```
 
 ## ⚙️ Setup
 
